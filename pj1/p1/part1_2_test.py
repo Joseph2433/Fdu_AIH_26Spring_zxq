@@ -65,7 +65,7 @@ def load_model(model_path: str) -> Tuple[NeuralNetwork, Dict[int, str], int]:
 def main():
     # 直接在这里修改测试配置
     model_path = "part1_2_model.pkl"
-    test_dir = "../test"
+    test_dir = "../test_data"
 
     model, label_map, num_classes = load_model(model_path)
     print(f"Model: {model_path}")

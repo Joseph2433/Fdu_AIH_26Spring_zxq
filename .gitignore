@@ -1,24 +1,50 @@
 *.zip
 .vscode
-__pycache__/
+*.txt
 *.pdf
+*.rar
 *.code-workspace
 read_pdf.py
 read_pdf_v2.py
-
+*.png
+*.pt
+*.pkl
 
 # Keep only code and model artifacts under pj1.
 # Ignore dataset folders and data archives.
 pj1/train/
-pj1/test/
+pj1/test_data/
 pj1/train.zip
+pj1/test_data.zip
 
 # Ignore report/docs and packaged submission artifacts.
 pj1/PJ1.pdf
 pj1/实验文档.md
-pj1/24300240147-尤荣煊/
-pj1/24300240147-尤荣煊.zip
-
+pj2/实验文档.md
+pj2/后续优化.md
 # Ignore generated figures.
 pj1/p1/*.png
 pj1/p2/*.png
+
+*/inference.md
+
+# pycache
+__pycache__/
+*.pyc
+
+# 提交文件
+24300240147-尤荣煊/
+
+# agents
+AGENTS.md
+agents/
+.claude
+
+# 其他临时文件
+pj2/后续优化.md
+
+# 测试脚本
+pj2/*/%test%.py
+
+*/pretrained/
+*/NER/

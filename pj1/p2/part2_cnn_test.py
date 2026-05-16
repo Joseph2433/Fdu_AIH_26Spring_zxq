@@ -81,7 +81,7 @@ def evaluate_labeled(model: nn.Module, loader: DataLoader, device: torch.device)
 def main():
     # 直接在这里修改测试配置
     model_path = "part2_cnn.pt"
-    test_dir = "../test"
+    test_dir = "../test_data"
     batch_size = 128
     device_name = "auto"  # 可选: "auto" / "cpu" / "cuda"
 
