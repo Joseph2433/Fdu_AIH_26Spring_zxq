@@ -45,8 +45,16 @@ def predict(language: str, src_name: str, device, batch_size: int = 32):
     cfg = ckpt["config"]
 
     tokenizer = AutoTokenizer.from_pretrained(bert_path)
-    model = BertCRF(bert_path, num_tags=len(id2tag), dropout=cfg["dropout"]).to(device)
-    model.load_state_dict(ckpt["state_dict"])
+    model = BertCRF(
+        bert_path,
+        num_tags=len(id2tag),
+        dropout=cfg["dropout"],
+        bert_trainable_layers=int(cfg.get("bert_trainable_layers", 4)),
+    ).to(device)
+    missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
+    unexpected = [k for k in unexpected if not k.startswith("bert.")]
+    if unexpected:
+        raise RuntimeError(f"Unexpected checkpoint keys: {unexpected}")
     model.eval()
 
     src_path = ner_path(language, src_name)

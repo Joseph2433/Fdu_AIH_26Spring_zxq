@@ -5,9 +5,9 @@
 - CRF 层: 共享 crf_layer.LinearChainCRF
 - 长句处理: 按子词数 chunk，每 chunk ≤ 510，CRF 在 word-level emission 上整句解码
 
-- 优化器分组学习率: BERT 主体 2e-5, CRF + classifier head 1e-3
+- 仅解冻 BERT 最后 4 层，训练 CRF + classifier head
 - AdamW + linear warmup (10% steps)
-- epochs:  Chinese 4, English 3
+- epochs:  Chinese 15, English 20
 - 模型保存到 part3_<lang>.pt（仅保存 head + crf 权重 + 配置；BERT 路径单独记录）
 
 运行：
@@ -210,9 +210,21 @@ def bert_collate(batch):
 # ------------------ Model ------------------
 class BertCRF(nn.Module):
     def __init__(self, bert_path: str, num_tags: int, dropout: float = 0.1,
-                 illegal_trans_mask=None, illegal_start_mask=None, illegal_end_mask=None):
+                 illegal_trans_mask=None, illegal_start_mask=None, illegal_end_mask=None,
+                 bert_trainable_layers: int = 4):
         super().__init__()
         self.bert = AutoModel.from_pretrained(bert_path)
+        self.bert_trainable_layers = int(bert_trainable_layers)
+        for p in self.bert.parameters():
+            p.requires_grad = False
+        if self.bert_trainable_layers > 0:
+            encoder = getattr(self.bert, "encoder", None)
+            layers = getattr(encoder, "layer", None) if encoder is not None else None
+            if layers is None:
+                raise RuntimeError("BERT encoder layers not found; cannot unfreeze last layers")
+            for layer in layers[-self.bert_trainable_layers:]:
+                for p in layer.parameters():
+                    p.requires_grad = True
         hidden = self.bert.config.hidden_size
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden, num_tags)
@@ -224,7 +236,11 @@ class BertCRF(nn.Module):
         )
 
     def emissions(self, input_ids, attn, first_idx, word_mask):
-        out = self.bert(input_ids=input_ids, attention_mask=attn).last_hidden_state  # (B, S, H)
+        if any(p.requires_grad for p in self.bert.parameters()):
+            out = self.bert(input_ids=input_ids, attention_mask=attn).last_hidden_state
+        else:
+            with torch.no_grad():
+                out = self.bert(input_ids=input_ids, attention_mask=attn).last_hidden_state
         # 取每词首子词
         B, S, H = out.shape
         W = first_idx.size(1)
@@ -264,7 +280,7 @@ def evaluate_loader(model: BertCRF, loader: DataLoader, id2tag: List[str], devic
 
 # ------------------ Train ------------------
 def train_one_lang(language: str, epochs: int, batch_size: int,
-                   lr_bert: float, lr_head: float, weight_decay: float,
+                   lr_head: float, weight_decay: float,
                    warmup_ratio: float, dropout: float,
                    device: torch.device, seed: int = 42) -> dict:
     torch.manual_seed(seed)
@@ -300,20 +316,22 @@ def train_one_lang(language: str, epochs: int, batch_size: int,
     model = BertCRF(bert_path, num_tags=len(labels), dropout=dropout,
                     illegal_trans_mask=illegal_trans,
                     illegal_start_mask=illegal_init,
-                    illegal_end_mask=illegal_end).to(device)
+                    illegal_end_mask=illegal_end,
+                    bert_trainable_layers=4).to(device)
 
-    # 分组学习率
+    # 冻结 BERT 其余层，仅优化最后 4 层 + 分类头与 CRF。
     bert_params = list(model.bert.named_parameters())
+    trainable_bert_params = [(n, p) for n, p in bert_params if p.requires_grad]
     head_params = (
         list(model.fc.named_parameters())
         + [("crf." + n, p) for n, p in model.crf.named_parameters()]
     )
     no_decay = ("bias", "LayerNorm.weight")
     optim_groups = [
-        {"params": [p for n, p in bert_params if not any(nd in n for nd in no_decay)],
-         "lr": lr_bert, "weight_decay": weight_decay},
-        {"params": [p for n, p in bert_params if any(nd in n for nd in no_decay)],
-         "lr": lr_bert, "weight_decay": 0.0},
+        {"params": [p for n, p in trainable_bert_params if not any(nd in n for nd in no_decay)],
+         "lr": 1e-5, "weight_decay": weight_decay},
+        {"params": [p for n, p in trainable_bert_params if any(nd in n for nd in no_decay)],
+         "lr": 1e-5, "weight_decay": 0.0},
         {"params": [p for n, p in head_params if not any(nd in n for nd in no_decay)],
          "lr": lr_head, "weight_decay": weight_decay},
         {"params": [p for n, p in head_params if any(nd in n for nd in no_decay)],
@@ -346,8 +364,11 @@ def train_one_lang(language: str, epochs: int, batch_size: int,
               f"elapsed {elapsed:.0f}s")
         if f1 > best_f1:
             best_f1 = f1
-            # 仅保存非 BERT 权重 + 全部 state（BERT 也要存，inference 一致性）
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {
+                k: v.detach().cpu().clone()
+                for k, v in model.state_dict().items()
+                if k.startswith("bert.encoder.layer.") or not k.startswith("bert.")
+            }
 
     print(f"[{language}] best val micro-F1 = {best_f1:.4f}")
     return {
@@ -355,7 +376,7 @@ def train_one_lang(language: str, epochs: int, batch_size: int,
         "tag2id": tag2id,
         "id2tag": labels,
         "bert_path": bert_path,
-        "config": {"dropout": dropout},
+        "config": {"dropout": dropout, "bert_trainable_layers": 4},
         "state_dict": best_state,
         "best_f1": best_f1,
     }
@@ -370,9 +391,9 @@ def main():
     print(f"device={device}")
 
     plan = {
-        "Chinese": dict(epochs=4, batch_size=16, lr_bert=2e-5, lr_head=1e-3,
+        "Chinese": dict(epochs=15, batch_size=16, lr_head=1e-3,
                         weight_decay=0.01, warmup_ratio=0.1, dropout=0.1),
-        "English": dict(epochs=3, batch_size=16, lr_bert=3e-5, lr_head=1e-3,
+        "English": dict(epochs=20, batch_size=16, lr_head=1e-3,
                         weight_decay=0.01, warmup_ratio=0.1, dropout=0.1),
     }
     langs = ["Chinese", "English"] if args.lang == "both" else [args.lang]
